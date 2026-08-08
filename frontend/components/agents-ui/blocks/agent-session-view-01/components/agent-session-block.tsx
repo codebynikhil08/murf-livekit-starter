@@ -101,6 +101,137 @@ export function Fade({ top = false, bottom = false, className }: FadeProps) {
   );
 }
 
+/* ── Agent State Badge ──────────────────────────────────────────── */
+type AgentStateType = 'connecting' | 'pre-connect-buffering' | 'listening' | 'thinking' | 'speaking' | string;
+
+interface AgentStateBadgeProps {
+  agentState: AgentStateType;
+}
+
+function AgentStateBadge({ agentState }: AgentStateBadgeProps) {
+  const config = {
+    connecting: {
+      label: 'Connecting...',
+      color: 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/20',
+      dot: 'bg-yellow-500 animate-pulse',
+    },
+    'pre-connect-buffering': {
+      label: 'Warming up...',
+      color: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/20',
+      dot: 'bg-blue-500 animate-pulse',
+    },
+    listening: {
+      label: 'Listening to you...',
+      color: 'bg-primary/15 text-primary border-primary/20',
+      dot: 'bg-primary animate-listening-ripple',
+    },
+    thinking: {
+      label: 'Agent is thinking...',
+      color: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/20',
+      dot: 'bg-purple-500 animate-pulse',
+    },
+    speaking: {
+      label: 'Agent is speaking...',
+      color: 'bg-orange-400/15 text-orange-600 dark:text-orange-400 border-orange-400/20',
+      dot: 'bg-orange-400 animate-speaking-ring',
+    },
+  };
+
+  const cfg = config[agentState as keyof typeof config] ?? config.connecting;
+
+  return (
+    <motion.div
+      key={agentState}
+      initial={{ opacity: 0, y: 6, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -6, scale: 0.95 }}
+      transition={{ duration: 0.2 }}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold backdrop-blur-sm',
+        cfg.color
+      )}
+    >
+      <span className={cn('h-2 w-2 rounded-full shrink-0', cfg.dot)} />
+      {cfg.label}
+    </motion.div>
+  );
+}
+
+/* ── Call Ended Overlay ─────────────────────────────────────────── */
+interface CallEndedOverlayProps {
+  onRestart: () => void;
+}
+
+function CallEndedOverlay({ onRestart }: CallEndedOverlayProps) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/90 backdrop-blur-md px-6"
+    >
+      <motion.div
+        initial={{ scale: 0.8, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ delay: 0.15, type: 'spring', stiffness: 300, damping: 25 }}
+        className="flex flex-col items-center gap-6 text-center max-w-sm"
+      >
+        {/* Checkmark circle */}
+        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-green-500/15 border border-green-500/30">
+          <svg
+            width="36"
+            height="36"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-green-500"
+          >
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+            <polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+        </div>
+
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">Call Ended</h2>
+          <p className="mt-2 text-sm text-muted-foreground leading-6">
+            Thank you for using TechSeva Support. We hope we could help!
+          </p>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 w-full">
+          <button
+            id="restart-call-btn"
+            onClick={onRestart}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-[0_4px_20px_rgba(99,102,241,0.35)] transition-all hover:shadow-[0_6px_30px_rgba(99,102,241,0.5)] hover:scale-[1.02] active:scale-[0.98]"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+            </svg>
+            Start Again
+          </button>
+        </div>
+
+        <p className="text-xs text-muted-foreground/60">
+          Powered by Murf Falcon · TechSeva AI Support
+        </p>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 export interface AgentSessionView_01Props {
   /**
    * Message shown above the controls before the first chat message is sent.
@@ -156,10 +287,10 @@ export interface AgentSessionView_01Props {
 }
 
 export function AgentSessionView_01({
-  preConnectMessage = 'Agent is listening, ask it a question',
+  preConnectMessage = 'नमस्ते! TechSeva Support यहाँ है — आप क्या जानना चाहते हैं?',
   supportsChatInput = true,
-  supportsVideoInput = true,
-  supportsScreenShare = true,
+  supportsVideoInput = false,
+  supportsScreenShare = false,
   isPreConnectBufferEnabled = true,
 
   audioVisualizerType,
@@ -178,6 +309,7 @@ export function AgentSessionView_01({
   const session = useSessionContext();
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
+  const [callEnded, setCallEnded] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
 
@@ -198,6 +330,16 @@ export function AgentSessionView_01({
     }
   }, [messages]);
 
+  const handleDisconnect = () => {
+    session.end();
+    setCallEnded(true);
+  };
+
+  const handleRestart = () => {
+    setCallEnded(false);
+    session.start();
+  };
+
   return (
     <section
       ref={ref}
@@ -205,8 +347,17 @@ export function AgentSessionView_01({
       {...props}
     >
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
-      {/* transcript */}
 
+      {/* Agent state badge — centered top */}
+      <div className="absolute top-20 left-0 right-0 z-20 flex justify-center pointer-events-none">
+        <AnimatePresence mode="wait">
+          {agentState && agentState !== 'disconnected' && (
+            <AgentStateBadge key={agentState} agentState={agentState} />
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* transcript */}
       <div className="absolute top-0 bottom-[135px] flex w-full flex-col md:bottom-[170px]">
         <AnimatePresence>
           {chatOpen && (
@@ -223,7 +374,8 @@ export function AgentSessionView_01({
           )}
         </AnimatePresence>
       </div>
-      {/* Tile layout */}
+
+      {/* Tile layout — audio visualizer */}
       <TileLayout
         chatOpen={chatOpen}
         audioVisualizerType={audioVisualizerType}
@@ -236,7 +388,8 @@ export function AgentSessionView_01({
         audioVisualizerGridColumnCount={audioVisualizerGridColumnCount}
         audioVisualizerWaveLineWidth={audioVisualizerWaveLineWidth}
       />
-      {/* Bottom */}
+
+      {/* Bottom controls */}
       <motion.div
         {...BOTTOM_VIEW_MOTION_PROPS}
         className="absolute inset-x-3 bottom-0 z-50 md:inset-x-12"
@@ -264,11 +417,18 @@ export function AgentSessionView_01({
             controls={controls}
             isChatOpen={chatOpen}
             isConnected={session.isConnected}
-            onDisconnect={session.end}
+            onDisconnect={handleDisconnect}
             onIsChatOpenChange={setChatOpen}
           />
         </div>
       </motion.div>
+
+      {/* Call Ended Overlay */}
+      <AnimatePresence>
+        {callEnded && (
+          <CallEndedOverlay key="call-ended" onRestart={handleRestart} />
+        )}
+      </AnimatePresence>
     </section>
   );
 }
