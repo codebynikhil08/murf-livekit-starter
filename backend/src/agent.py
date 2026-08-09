@@ -1,4 +1,6 @@
+import json
 import logging
+from typing import Optional
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -8,7 +10,9 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RunContext,
     cli,
+    function_tool,
     inference,
     tokenize,
     room_io,
@@ -17,41 +21,112 @@ from livekit.agents import (
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from src.db import get_caller_info, save_caller_info, init_db
+
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
-SYSTEM_PROMPT = """You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate. Your responses are concise and without complex formatting, emojis, or symbols."""
+SYSTEM_PROMPT = """You are Kisan Mitra, a warm, polite, and helpful voice AI assistant for farmers (Farm & Field track).
+Your goal is to assist farmers with crop advice, farming techniques, and agricultural guidance.
+Keep all spoken responses concise, conversational, clear, and without emojis or Markdown formatting symbols.
+
+IMPORTANT OPERATIONAL RULES FOR CALLER MEMORY & PRIVACY:
+
+1. IDENTIFYING CALLERS:
+   - When a caller introduces themselves or gives their name (e.g., "Hi, I am Ramesh" or "My name is Ramesh"), immediately call the `lookup_caller` function tool with their name.
+
+2. GREETING RETURNING CALLERS:
+   - If `lookup_caller` returns an existing record for the caller:
+     * Welcome them back warmly by name (e.g., "Namaste Ramesh! Welcome back.").
+     * Reference their saved facts (e.g., crops grown, land size, district, irrigation type).
+     * Ask a friendly follow-up question continuing from last time (e.g., "Last time we spoke about your 5 acres of cotton in Yavatmal. How are your crops doing today?").
+   - If `lookup_caller` returns no record:
+     * Greet them warmly as a new caller and ask for their name, district/location, crops grown, and land size.
+
+3. CONSENT BEFORE SAVING DATA (HARD PRIVACY RULE):
+   - BEFORE saving any facts or user details, you MUST explicitly ask the caller for permission:
+     "May I save these details so I can remember you for our next call?"
+   - If the caller says YES (e.g., "Yes", "Sure", "Go ahead", "Okay"):
+     * Immediately call the `save_caller_facts` function tool to save their details.
+     * Confirm to the user that their details have been saved.
+   - If the caller says NO or declines (e.g., "No", "Don't save", "No thanks"):
+     * Do NOT call `save_caller_facts`.
+     * Respect their decision and confirm that no details will be saved.
+
+Always maintain a respectful, supportive, and encouraging tone."""
 
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool
+    async def lookup_caller(self, context: RunContext, identifier: str) -> str:
+        """Use this tool to look up a caller's saved details from the database by their name or user ID.
+
+        Args:
+            identifier: The name or user ID of the caller (e.g., 'Ramesh', 'user_ramesh').
+        """
+        logger.info(f"Tool lookup_caller invoked for: {identifier}")
+        record = get_caller_info(identifier)
+        if not record:
+            return f"No prior record found for caller '{identifier}'. This is a new caller."
+
+        return f"Caller record found: {json.dumps(record)}"
+
+    @function_tool
+    async def save_caller_facts(
+        self,
+        context: RunContext,
+        name: str,
+        language_preference: str = "English",
+        crops_grown: str = "",
+        land_size: str = "",
+        district: str = "",
+        irrigation_type: str = "",
+        other_facts: str = "",
+    ) -> str:
+        """Use this tool ONLY AFTER asking the caller for explicit permission to save their details AND receiving affirmative consent ('Yes'). Do NOT call this tool if the user declines consent.
+
+        Args:
+            name: The caller's name.
+            language_preference: Preferred spoken language (e.g., 'Hindi', 'English', 'Marathi').
+            crops_grown: Crops or produce grown by the farmer (e.g., 'cotton, wheat').
+            land_size: Size of farm land (e.g., '5 acres').
+            district: District or location (e.g., 'Yavatmal').
+            irrigation_type: Type of irrigation used (e.g., 'drip irrigation', 'rainfed').
+            other_facts: Any other relevant caller details discussed.
+        """
+        logger.info(f"Tool save_caller_facts invoked for: {name}")
+        facts = {}
+        if crops_grown:
+            facts["crops_grown"] = crops_grown
+        if land_size:
+            facts["land_size"] = land_size
+        if district:
+            facts["district"] = district
+        if irrigation_type:
+            facts["irrigation_type"] = irrigation_type
+        if other_facts:
+            facts["other_facts"] = other_facts
+
+        user_id = f"user_{name.lower().strip().replace(' ', '_')}"
+        saved_record = save_caller_info(
+            name=name,
+            user_id=user_id,
+            language_preference=language_preference,
+            facts=facts,
+        )
+        return f"Successfully saved details for {name}: {json.dumps(saved_record)}"
+
 
 
 server = AgentServer()
 
 
 def prewarm(proc: JobProcess):
+    init_db()
     proc.userdata["vad"] = silero.VAD.load()
 
 

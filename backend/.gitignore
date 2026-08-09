@@ -30,4 +30,5 @@ KMS
 .cursor/rules/*.local.mdc
 
 # GitHub CLI
-.github/personal-instructions.md
+# SQLite databases
+*.db
