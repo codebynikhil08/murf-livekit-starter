@@ -21,38 +21,47 @@ from livekit.agents import (
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from src.db import get_caller_info, save_caller_info, init_db
+import sys
+from pathlib import Path
+
+# Ensure backend and backend/src are both on sys.path
+src_dir = Path(__file__).parent
+backend_dir = src_dir.parent
+for p in (str(src_dir), str(backend_dir)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+try:
+    from src.db import get_caller_info, save_caller_info, init_db
+    from src.tools import fetch_mandi_prices, fetch_district_weather
+except ModuleNotFoundError:
+    from db import get_caller_info, save_caller_info, init_db
+    from tools import fetch_mandi_prices, fetch_district_weather
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
 SYSTEM_PROMPT = """You are Kisan Mitra, a warm, polite, and helpful voice AI assistant for farmers (Farm & Field track).
-Your goal is to assist farmers with crop advice, farming techniques, and agricultural guidance.
+Your goal is to assist farmers with crop advice, farming techniques, market mandi prices, and weather updates.
 Keep all spoken responses concise, conversational, clear, and without emojis or Markdown formatting symbols.
 
-IMPORTANT OPERATIONAL RULES FOR CALLER MEMORY & PRIVACY:
+IMPORTANT OPERATIONAL RULES FOR DOMAIN LOOKUPS & TOOLS:
 
-1. IDENTIFYING CALLERS:
-   - When a caller introduces themselves or gives their name (e.g., "Hi, I am Ramesh" or "My name is Ramesh"), immediately call the `lookup_caller` function tool with their name.
+1. MANDI PRICE LOOKUP (`lookup_mandi_prices`):
+   - When a caller asks about market rates, crop prices, mandi rates, or selling prices (e.g. "What is the price of cotton in Yavatmal?"), call `lookup_mandi_prices(crop, district)`.
+   - ALWAYS state the date/time of the price data when replying (e.g., "As of today's Agmarknet update...").
+   - IF THE TOOL RETURNS A FAILURE/TIMEOUT MESSAGE: State clearly and politely out loud to the caller that the market data service is temporarily offline or unavailable, and ask them to check back shortly. Never invent fake rates.
 
-2. GREETING RETURNING CALLERS:
-   - If `lookup_caller` returns an existing record for the caller:
-     * Welcome them back warmly by name (e.g., "Namaste Ramesh! Welcome back.").
-     * Reference their saved facts (e.g., crops grown, land size, district, irrigation type).
-     * Ask a friendly follow-up question continuing from last time (e.g., "Last time we spoke about your 5 acres of cotton in Yavatmal. How are your crops doing today?").
-   - If `lookup_caller` returns no record:
-     * Greet them warmly as a new caller and ask for their name, district/location, crops grown, and land size.
+2. WEATHER FORECAST LOOKUP (`get_district_weather`):
+   - When a caller asks about weather, rainfall, temperature, or spraying/farming conditions (e.g. "Will it rain in Yavatmal today?"), call `get_district_weather(district)`.
+   - ALWAYS state the timestamp of the forecast and provide relevant practical farming advice (e.g., whether to delay spraying pesticides).
+   - IF THE TOOL RETURNS A FAILURE/TIMEOUT MESSAGE: State clearly out loud to the caller that the weather service is unreachable right now due to network issues. Never guess weather data.
 
-3. CONSENT BEFORE SAVING DATA (HARD PRIVACY RULE):
-   - BEFORE saving any facts or user details, you MUST explicitly ask the caller for permission:
-     "May I save these details so I can remember you for our next call?"
-   - If the caller says YES (e.g., "Yes", "Sure", "Go ahead", "Okay"):
-     * Immediately call the `save_caller_facts` function tool to save their details.
-     * Confirm to the user that their details have been saved.
-   - If the caller says NO or declines (e.g., "No", "Don't save", "No thanks"):
-     * Do NOT call `save_caller_facts`.
-     * Respect their decision and confirm that no details will be saved.
+3. CALLER MEMORY & PRIVACY RULES:
+   - IDENTIFYING CALLERS: When a caller introduces themselves (e.g. "Hi, I am Ramesh"), call `lookup_caller(identifier)`.
+   - CONSENT BEFORE SAVING DATA: BEFORE saving any facts or user details, explicitly ask: "May I save these details so I can remember you for our next call?"
+   - Only call `save_caller_facts` if the user explicitly consents.
 
 Always maintain a respectful, supportive, and encouraging tone."""
 
@@ -60,6 +69,27 @@ Always maintain a respectful, supportive, and encouraging tone."""
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
+
+    @function_tool
+    async def lookup_mandi_prices(self, context: RunContext, crop: str, district: str) -> str:
+        """Use this tool to look up real-time market (mandi) prices for crops in a specified district or location. Always call this tool when a user asks about crop prices, market rates, mandi rates, or selling prices for produce.
+
+        Args:
+            crop: Name of the crop (e.g., 'cotton', 'wheat', 'soybean', 'onion', 'rice', 'tomato').
+            district: District or market location (e.g., 'Yavatmal', 'Ludhiana', 'Nashik', 'Nagpur', 'Pune').
+        """
+        logger.info(f"Tool lookup_mandi_prices invoked for crop='{crop}', district='{district}'")
+        return fetch_mandi_prices(crop=crop, district=district)
+
+    @function_tool
+    async def get_district_weather(self, context: RunContext, district: str) -> str:
+        """Use this tool to fetch current live weather forecast and agricultural weather conditions for a specified district or city. Always call this tool when a user asks about weather, rainfall, temperature, or spraying/harvesting conditions.
+
+        Args:
+            district: Name of the district or city (e.g., 'Yavatmal', 'Ludhiana', 'Pune', 'Nashik').
+        """
+        logger.info(f"Tool get_district_weather invoked for district='{district}'")
+        return fetch_district_weather(district=district)
 
     @function_tool
     async def lookup_caller(self, context: RunContext, identifier: str) -> str:
@@ -187,24 +217,14 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Join the room and connect to the user first
+    await ctx.connect()
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
         room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind
-                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
-                ),
-            ),
-        ),
     )
-
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":

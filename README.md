@@ -260,6 +260,21 @@ For deeper documentation on each part, see:
 
 ---
 
+## Day 5 — Real-World Domain Data & Function Tools (Farm & Field Track)
+
+Kisan Mitra is now connected to live domain tools that fetch real-time agricultural data off the internet, handle network timeouts gracefully, and state explicit data timestamps.
+
+### 1. Tools Added
+- **`lookup_mandi_prices(crop, district)`**: Looks up current mandi (market) prices for crops (Cotton, Wheat, Soybean, Onion, Tomato, Rice) by district. Data includes modal rates, price ranges, market names, and verified timestamps (e.g. *Agmarknet Live Feed - As of 10 August 2026*).
+- **`get_district_weather(district)`**: Queries the live **Open-Meteo REST API** to retrieve current temperature, rain probability, wind speed, relative humidity, and agricultural advice (e.g., whether to delay pesticide spraying due to rain).
+
+### 2. Graceful Failure & Out-Loud Error Handling
+- When external APIs time out or network connections fail, the tools capture exceptions and return explicit `FAILURE` status prompts.
+- The agent is explicitly instructed by system prompt to **speak out loud to the caller** informing them that the live market/weather service is temporarily offline, rather than inventing fake data or staying silent.
+- *Test Trigger*: Passing `"offline"` or `"timeout"` in the district name (e.g., asking for weather in "offline district") triggers the API failure response path for video recording and testing.
+
+---
+
 ## Links
 
 - [Murf API Docs](https://murf.ai/api/docs)
