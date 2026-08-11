@@ -13,6 +13,9 @@ dependencies = [
     "livekit-murf>=0.1.1",
     "livekit-plugins-noise-cancellation~=0.2",
     "python-dotenv",
+    "twilio>=9.0",
+    "flask>=3.0",
+    "pyngrok>=7.0",
 ]
 
 [dependency-groups]
