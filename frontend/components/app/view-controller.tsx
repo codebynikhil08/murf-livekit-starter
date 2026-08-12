@@ -1,11 +1,13 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAgent, useSessionContext } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
 import { WelcomeView } from '@/components/app/welcome-view';
+import { EscalationDashboard } from '@/components/app/escalation-dashboard';
 
 const MotionWelcomeView = motion.create(WelcomeView);
 const MotionSessionView = motion.create(AgentSessionView_01);
@@ -64,9 +66,9 @@ function ConnectingOverlay() {
           </div>
         </div>
         <div className="text-center">
-          <p className="text-base font-semibold text-foreground">Connecting to TechSeva...</p>
+          <p className="text-base font-semibold text-foreground">Connecting to Kisan Mitra...</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Setting up your AI support session, please wait
+            Setting up your AI agricultural assistant session, please wait
           </p>
         </div>
         {/* Animated dots */}
@@ -94,6 +96,29 @@ function ViewControllerInner({ appConfig }: { appConfig: AppConfig }) {
   const { isConnected, start } = useSessionContext();
   const { state: agentState } = useAgent();
   const { resolvedTheme } = useTheme();
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [openTicketsCount, setOpenTicketsCount] = useState(0);
+
+  // Poll open tickets count for top button badge
+  useEffect(() => {
+    const fetchCount = async () => {
+      try {
+        const res = await fetch('/api/escalations');
+        const data = await res.json();
+        if (data.success && Array.isArray(data.escalations)) {
+          const openCount = data.escalations.filter(
+            (item: { status: string }) => item.status === 'Open'
+          ).length;
+          setOpenTicketsCount(openCount);
+        }
+      } catch {
+        // silent catch
+      }
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   const isConnecting = isConnected && agentState === 'connecting';
   const showWelcome = !isConnected;
@@ -101,6 +126,28 @@ function ViewControllerInner({ appConfig }: { appConfig: AppConfig }) {
 
   return (
     <>
+      {/* Top Bar for Escalations Dashboard */}
+      <div className="fixed top-4 right-4 z-40 flex items-center gap-3">
+        <button
+          onClick={() => setDashboardOpen(true)}
+          className="relative inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-slate-900/90 px-4 py-2 text-xs font-semibold text-amber-300 backdrop-blur-md shadow-lg transition-all hover:bg-slate-800 hover:border-amber-500/60 active:scale-95"
+        >
+          <span className="text-base">🌾</span>
+          <span>Human Help Portal</span>
+          {openTicketsCount > 0 && (
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-bold text-white shadow-sm animate-pulse">
+              {openTicketsCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Escalation Dashboard Modal */}
+      <EscalationDashboard
+        isOpen={dashboardOpen}
+        onClose={() => setDashboardOpen(false)}
+      />
+
       <AnimatePresence mode="wait">
         {/* Welcome view */}
         {showWelcome && (
@@ -153,3 +200,4 @@ interface ViewControllerProps {
 export function ViewController({ appConfig }: ViewControllerProps) {
   return <ViewControllerInner appConfig={appConfig} />;
 }
+

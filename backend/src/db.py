@@ -1,8 +1,10 @@
 import json
 import sqlite3
 import os
+import re
+import random
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_memory.db")
 
@@ -14,7 +16,7 @@ def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
-    """Initialize the SQLite database and create users table if not exists."""
+    """Initialize the SQLite database and create users and escalations tables if not exist."""
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute(
@@ -28,8 +30,38 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         );
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS escalations (
+            id TEXT PRIMARY KEY,
+            reference_id TEXT UNIQUE NOT NULL,
+            caller_name TEXT NOT NULL,
+            issue_summary TEXT NOT NULL,
+            urgency TEXT NOT NULL,
+            language_preference TEXT DEFAULT 'Hindi',
+            contact_method TEXT DEFAULT 'Phone Call',
+            location TEXT DEFAULT '',
+            status TEXT DEFAULT 'Open',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
     conn.commit()
     conn.close()
+
+
+def sanitize_summary(text: str) -> str:
+    """Remove private/sensitive info (passwords, OTPs, PINs, bank accounts, Aadhaar) from summary."""
+    if not text:
+        return text
+    # Mask OTPs or PINs
+    text = re.sub(r'\b(otp|pin|password|passcode|code|cvv)\s*[:=]?\s*\d{4,8}\b', r'\1: [REDACTED]', text, flags=re.IGNORECASE)
+    # Mask 12-digit numbers (Aadhaar)
+    text = re.sub(r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', '[REDACTED_ID]', text)
+    # Mask 16-digit card or account numbers
+    text = re.sub(r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', '[REDACTED_ACCT]', text)
+    return text
 
 
 def get_caller_info(identifier: str, db_path: str = DEFAULT_DB_PATH) -> Optional[Dict[str, Any]]:
@@ -135,3 +167,128 @@ def save_caller_info(
         "facts": facts,
         "last_interaction": now_iso,
     }
+
+
+def create_escalation_record(
+    caller_name: str,
+    issue_summary: str,
+    urgency: str = "medium",
+    language_preference: str = "Hindi",
+    contact_method: str = "Phone Call",
+    location: str = "",
+    db_path: str = DEFAULT_DB_PATH,
+) -> Dict[str, Any]:
+    """Save or update a human help escalation request with deduplication."""
+    init_db(db_path)
+    clean_name = caller_name.strip() if caller_name else "Anonymous Farmer"
+    clean_summary = sanitize_summary(issue_summary)
+    valid_urgencies = ["low", "medium", "high", "emergency"]
+    clean_urgency = urgency.lower().strip() if urgency and urgency.lower().strip() in valid_urgencies else "medium"
+    
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    # Check for open/in-progress duplicate request from the same caller
+    cursor.execute(
+        """
+        SELECT reference_id, issue_summary, urgency, status 
+        FROM escalations 
+        WHERE LOWER(caller_name) = LOWER(?) AND status IN ('Open', 'In Progress')
+        ORDER BY created_at DESC LIMIT 1;
+        """,
+        (clean_name,)
+    )
+    existing = cursor.fetchone()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if existing:
+        ref_id = existing["reference_id"]
+        updated_summary = f"{existing['issue_summary']} | Update: {clean_summary}"
+        cursor.execute(
+            """
+            UPDATE escalations 
+            SET issue_summary = ?, urgency = ?, updated_at = ?
+            WHERE reference_id = ?;
+            """,
+            (updated_summary, clean_urgency, now_iso, ref_id)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "reference_id": ref_id,
+            "caller_name": clean_name,
+            "issue_summary": updated_summary,
+            "urgency": clean_urgency,
+            "language_preference": language_preference,
+            "contact_method": contact_method,
+            "location": location,
+            "status": existing["status"],
+            "is_duplicate_updated": True,
+            "created_at": now_iso,
+        }
+
+    # Create new escalation
+    ref_id = f"ESC-{random.randint(10000, 99999)}"
+    esc_id = f"esc_{now_iso.replace(':', '').replace('-', '').replace('.', '')}_{random.randint(100, 999)}"
+
+    cursor.execute(
+        """
+        INSERT INTO escalations (id, reference_id, caller_name, issue_summary, urgency, language_preference, contact_method, location, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?);
+        """,
+        (esc_id, ref_id, clean_name, clean_summary, clean_urgency, language_preference, contact_method, location, now_iso, now_iso)
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "reference_id": ref_id,
+        "caller_name": clean_name,
+        "issue_summary": clean_summary,
+        "urgency": clean_urgency,
+        "language_preference": language_preference,
+        "contact_method": contact_method,
+        "location": location,
+        "status": "Open",
+        "is_duplicate_updated": False,
+        "created_at": now_iso,
+    }
+
+
+def get_all_escalations(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
+    """Retrieve all escalations from database ordered by created_at DESC."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, reference_id, caller_name, issue_summary, urgency, language_preference, contact_method, location, status, created_at, updated_at
+        FROM escalations
+        ORDER BY created_at DESC;
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def update_escalation_status(reference_id: str, new_status: str, db_path: str = DEFAULT_DB_PATH) -> bool:
+    """Update status ('Open', 'In Progress', 'Resolved') for an escalation."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        """
+        UPDATE escalations
+        SET status = ?, updated_at = ?
+        WHERE reference_id = ? OR id = ?;
+        """,
+        (new_status, now_iso, reference_id, reference_id)
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+

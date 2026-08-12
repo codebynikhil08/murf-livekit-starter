@@ -153,15 +153,15 @@ export const WelcomeView = ({
 
         {/* Headline */}
         <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-          TechSeva Support
+          Kisan Mitra — Farm & Field AI
         </h1>
 
         <p className="mt-3 max-w-xs text-sm leading-6 text-muted-foreground sm:max-w-sm sm:text-base">
-          बोलिए, हम सुन रहे हैं —{' '}
+          नमस्ते!{' '}
           <span className="text-foreground font-medium">
-            your AI support assistant is ready
+            Your AI agricultural voice assistant is ready
           </span>
-          . Ask about billing, accounts, or troubleshooting.
+          . Ask about Mandi prices, weather forecasts, or crop health advice.
         </p>
 
         {/* CTA button */}

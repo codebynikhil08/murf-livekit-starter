@@ -33,10 +33,10 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'TechSeva',
-  pageTitle: 'TechSeva Support — AI Voice Assistant',
+  companyName: 'Kisan Mitra',
+  pageTitle: 'Kisan Mitra Support — AI Voice Assistant',
   pageDescription:
-    'Talk to TechSeva AI Support in Hindi or English. Instant help with account issues, billing, and troubleshooting — powered by Murf Falcon.',
+    'Talk to Kisan Mitra AI Support in Hindi or English. Instant help with account issues, billing, and troubleshooting — powered by Murf Falcon.',
 
   supportsChatInput: true,
   supportsVideoInput: false,

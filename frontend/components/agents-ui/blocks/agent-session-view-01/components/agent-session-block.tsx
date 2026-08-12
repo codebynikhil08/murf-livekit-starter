@@ -197,7 +197,7 @@ function CallEndedOverlay({ onRestart }: CallEndedOverlayProps) {
         <div>
           <h2 className="text-2xl font-bold text-foreground">Call Ended</h2>
           <p className="mt-2 text-sm text-muted-foreground leading-6">
-            Thank you for using TechSeva Support. We hope we could help!
+            Thank you for using Kisan Mitra Support. We hope we could help!
           </p>
         </div>
 
@@ -225,7 +225,7 @@ function CallEndedOverlay({ onRestart }: CallEndedOverlayProps) {
         </div>
 
         <p className="text-xs text-muted-foreground/60">
-          Powered by Murf Falcon · TechSeva AI Support
+          Powered by Murf Falcon · Kisan Mitra AI Support
         </p>
       </motion.div>
     </motion.div>
@@ -287,7 +287,7 @@ export interface AgentSessionView_01Props {
 }
 
 export function AgentSessionView_01({
-  preConnectMessage = 'नमस्ते! TechSeva Support यहाँ है — आप क्या जानना चाहते हैं?',
+  preConnectMessage = 'नमस्ते! किसान मित्र यहाँ है — आप मण्डी भाव, मौसम या फसल की जानकारी पूछ सकते हैं।',
   supportsChatInput = true,
   supportsVideoInput = false,
   supportsScreenShare = false,

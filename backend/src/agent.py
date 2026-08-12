@@ -32,10 +32,10 @@ for p in (str(src_dir), str(backend_dir)):
         sys.path.insert(0, p)
 
 try:
-    from src.db import get_caller_info, save_caller_info, init_db
+    from src.db import get_caller_info, save_caller_info, init_db, create_escalation_record
     from src.tools import fetch_mandi_prices, fetch_district_weather
 except ModuleNotFoundError:
-    from db import get_caller_info, save_caller_info, init_db
+    from db import get_caller_info, save_caller_info, init_db, create_escalation_record
     from tools import fetch_mandi_prices, fetch_district_weather
 
 logger = logging.getLogger("agent")
@@ -43,7 +43,7 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 SYSTEM_PROMPT = """You are Kisan Mitra, a warm, polite, and helpful voice AI assistant for farmers (Farm & Field track).
-Your goal is to assist farmers with crop advice, farming techniques, market mandi prices, and weather updates.
+Your goal is to assist farmers with crop advice, farming techniques, market mandi prices, weather updates, and knowing when to escalate to human experts.
 Keep all spoken responses concise, conversational, clear, and without emojis or Markdown formatting symbols.
 
 IMPORTANT OPERATIONAL RULES FOR DOMAIN LOOKUPS & TOOLS:
@@ -51,7 +51,7 @@ IMPORTANT OPERATIONAL RULES FOR DOMAIN LOOKUPS & TOOLS:
 1. MANDI PRICE LOOKUP (`lookup_mandi_prices`):
    - When a caller asks about market rates, crop prices, mandi rates, or selling prices (e.g. "What is the price of cotton in Yavatmal?"), call `lookup_mandi_prices(crop, district)`.
    - ALWAYS state the date/time of the price data when replying (e.g., "As of today's Agmarknet update...").
-   - IF THE TOOL RETURNS A FAILURE/TIMEOUT MESSAGE: State clearly and politely out loud to the caller that the market data service is temporarily offline or unavailable, and ask them to check back shortly. Never invent fake rates.
+   - IF THE TOOL RETURNS A FAILURE/TIMEOUT MESSAGE: State clearly and politely out loud to the caller that the market data service is temporarily offline or unavailable, and ask if they would like to create a human support request. Never invent fake rates.
 
 2. WEATHER FORECAST LOOKUP (`get_district_weather`):
    - When a caller asks about weather, rainfall, temperature, or spraying/farming conditions (e.g. "Will it rain in Yavatmal today?"), call `get_district_weather(district)`.
@@ -62,6 +62,20 @@ IMPORTANT OPERATIONAL RULES FOR DOMAIN LOOKUPS & TOOLS:
    - IDENTIFYING CALLERS: When a caller introduces themselves (e.g. "Hi, I am Ramesh"), call `lookup_caller(identifier)`.
    - CONSENT BEFORE SAVING DATA: BEFORE saving any facts or user details, explicitly ask: "May I save these details so I can remember you for our next call?"
    - Only call `save_caller_facts` if the user explicitly consents.
+
+4. HUMAN HELP & ESCALATION RULES (`create_escalation`):
+   - WHEN TO ESCALATE TO A HUMAN EXPERT:
+     a) Severe Crop Emergency / Pest Infestation: Caller reports serious crop damage, pest infestation (e.g. Pink Bollworm, leaf yellowing, fungal blight, chemical spray damage) requiring expert inspection.
+     b) Missing/Offline Data or Complex Disputes: Market/weather service is offline or caller has an unresolved dispute or complex financial/subsidy issue.
+   - ASK BEFORE SHARING (MANDATORY CONSENT):
+     - Before calling `create_escalation`, explain out loud: "This sounds like a serious issue that requires an agricultural officer. May I create a help request and share your name, location, and issue details with our Krishi officer?"
+     - WAIT FOR THE CALLER'S ANSWER.
+     - IF THEY SAY YES: Call `create_escalation(caller_name=..., issue_summary=..., urgency=..., user_permission_granted=True, ...)`.
+     - IF THEY SAY NO: Respect their privacy! Politely acknowledge and DO NOT call `create_escalation`.
+   - SUMMARY & NEXT STEPS:
+     - Summarize only useful details: Who needs help, what happened, what was checked, urgency (low, medium, high, emergency), caller language, and contact method.
+     - Never include sensitive private credentials (passwords, OTPs, PINs, bank accounts).
+     - Give the caller a clear next step: Speak out the generated Reference ID (e.g., ESC-12345) clearly and state: "An agricultural officer from Krishi Vigyan Kendra will call you back on your phone within 24 hours. Your reference ID is ESC-XXXXX." Do not promise immediate callback unless true.
 
 Always maintain a respectful, supportive, and encouraging tone."""
 
@@ -149,6 +163,60 @@ class Assistant(Agent):
             facts=facts,
         )
         return f"Successfully saved details for {name}: {json.dumps(saved_record)}"
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        caller_name: str,
+        issue_summary: str,
+        urgency: str = "medium",
+        user_permission_granted: bool = False,
+        language_preference: str = "Hindi",
+        contact_method: str = "Phone Call",
+        location: str = "",
+    ) -> str:
+        """Use this tool to create a human help escalation request when a caller needs assistance from an agricultural officer or human specialist (e.g., severe crop disease/pest outbreak, or offline market/weather data).
+
+        CRITICAL REQUIREMENT: You MUST ask the caller for explicit permission before invoking this tool. If user_permission_granted is False, do NOT call this tool.
+
+        Args:
+            caller_name: The caller's name (e.g., 'Ramesh Pawar').
+            issue_summary: Concise summary of who needs help, what happened, what was checked, urgency, and language.
+            urgency: Urgency level ('low', 'medium', 'high', 'emergency').
+            user_permission_granted: True if caller explicitly agreed to share their name, location, and issue details with a human expert.
+            language_preference: Preferred language (e.g., 'Hindi', 'English', 'Marathi').
+            contact_method: Preferred follow-up method (e.g., 'Phone Call', 'SMS', 'WhatsApp').
+            location: Caller's district or village (e.g., 'Yavatmal, Maharashtra').
+        """
+        logger.info(f"Tool create_escalation invoked for caller='{caller_name}', granted={user_permission_granted}")
+        if not user_permission_granted:
+            return "ERROR: Permission denied by caller. Cannot share information or create human escalation request without explicit caller consent."
+
+        record = create_escalation_record(
+            caller_name=caller_name,
+            issue_summary=issue_summary,
+            urgency=urgency,
+            language_preference=language_preference,
+            contact_method=contact_method,
+            location=location,
+        )
+
+        ref_id = record["reference_id"]
+        status = record["status"]
+        is_update = record.get("is_duplicate_updated", False)
+
+        update_msg = " (Updated existing open request with new details)" if is_update else ""
+        return (
+            f"SUCCESS: Human escalation request recorded{update_msg}.\n"
+            f"Reference ID: {ref_id}\n"
+            f"Status: {status}\n"
+            f"Urgency: {record['urgency'].upper()}\n"
+            f"Caller: {record['caller_name']}\n"
+            f"INSTRUCTIONS FOR AGENT: Inform the caller out loud that their request has been logged under Reference ID '{ref_id}'. "
+            f"Tell them clearly that an agricultural officer from Krishi Vigyan Kendra will call them back via {record['contact_method']} within 24 hours."
+        )
+
 
 
 
