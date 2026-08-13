@@ -8,9 +8,11 @@ import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
 import { WelcomeView } from '@/components/app/welcome-view';
 import { EscalationDashboard } from '@/components/app/escalation-dashboard';
+import { AnalyticsDashboard } from '@/components/app/analytics-dashboard';
 
 const MotionWelcomeView = motion.create(WelcomeView);
 const MotionSessionView = motion.create(AgentSessionView_01);
+
 
 const VIEW_MOTION_PROPS = {
   variants: {
@@ -97,6 +99,7 @@ function ViewControllerInner({ appConfig }: { appConfig: AppConfig }) {
   const { state: agentState } = useAgent();
   const { resolvedTheme } = useTheme();
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [openTicketsCount, setOpenTicketsCount] = useState(0);
 
   // Poll open tickets count for top button badge
@@ -126,8 +129,16 @@ function ViewControllerInner({ appConfig }: { appConfig: AppConfig }) {
 
   return (
     <>
-      {/* Top Bar for Escalations Dashboard */}
-      <div className="fixed top-4 right-4 z-40 flex items-center gap-3">
+      {/* Top Bar for Escalations Dashboard & Analytics */}
+      <div className="fixed top-4 right-4 z-[55] flex items-center gap-3">
+        <button
+          onClick={() => setAnalyticsOpen(true)}
+          className="relative inline-flex items-center gap-2 rounded-full border border-indigo-500/30 bg-slate-900/90 px-4 py-2 text-xs font-semibold text-indigo-300 backdrop-blur-md shadow-lg transition-all hover:bg-slate-800 hover:border-indigo-500/60 active:scale-95"
+        >
+          <span className="text-base">📊</span>
+          <span>Call Analytics</span>
+        </button>
+
         <button
           onClick={() => setDashboardOpen(true)}
           className="relative inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-slate-900/90 px-4 py-2 text-xs font-semibold text-amber-300 backdrop-blur-md shadow-lg transition-all hover:bg-slate-800 hover:border-amber-500/60 active:scale-95"
@@ -147,6 +158,13 @@ function ViewControllerInner({ appConfig }: { appConfig: AppConfig }) {
         isOpen={dashboardOpen}
         onClose={() => setDashboardOpen(false)}
       />
+
+      {/* Call Analytics Dashboard Modal */}
+      <AnalyticsDashboard
+        isOpen={analyticsOpen}
+        onClose={() => setAnalyticsOpen(false)}
+      />
+
 
       <AnimatePresence mode="wait">
         {/* Welcome view */}

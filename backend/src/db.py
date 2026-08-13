@@ -47,8 +47,95 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         );
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calls (
+            session_id TEXT PRIMARY KEY,
+            caller_name TEXT,
+            status TEXT DEFAULT 'active',
+            outcome TEXT DEFAULT 'failed',
+            reason TEXT DEFAULT 'Call initiated',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
     conn.commit()
     conn.close()
+
+
+def create_call_record(session_id: str, caller_name: Optional[str] = None, db_path: str = DEFAULT_DB_PATH) -> None:
+    """Initialize a call record when the call session starts."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        """
+        INSERT INTO calls (session_id, caller_name, status, outcome, reason, created_at, updated_at)
+        VALUES (?, ?, 'active', 'failed', 'Call started', ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            updated_at = excluded.updated_at;
+        """,
+        (session_id, caller_name, now_iso, now_iso)
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_call_outcome(session_id: str, outcome: str, reason: str, caller_name: Optional[str] = None, db_path: str = DEFAULT_DB_PATH) -> None:
+    """Update call record outcome ('success' or 'failed') and status ('completed')."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if caller_name:
+        cursor.execute(
+            """
+            UPDATE calls
+            SET outcome = ?, reason = ?, status = 'completed', caller_name = ?, updated_at = ?
+            WHERE session_id = ?;
+            """,
+            (outcome, reason, caller_name, now_iso, session_id)
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE calls
+            SET outcome = ?, reason = ?, status = 'completed', updated_at = ?
+            WHERE session_id = ?;
+            """,
+            (outcome, reason, now_iso, session_id)
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_call_analytics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
+    """Retrieve total, successful, and failed call counts."""
+    init_db(db_path)
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM calls;")
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM calls WHERE outcome = 'success';")
+    successful = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM calls WHERE outcome = 'failed';")
+    failed = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT session_id, caller_name, status, outcome, reason, created_at, updated_at FROM calls ORDER BY created_at DESC LIMIT 50;")
+    recent_calls = [dict(row) for row in cursor.fetchall()]
+    
+    conn.close()
+    return {
+        "total": total,
+        "successful": successful,
+        "failed": failed,
+        "recent_calls": recent_calls
+    }
+
 
 
 def sanitize_summary(text: str) -> str:

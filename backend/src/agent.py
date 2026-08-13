@@ -20,6 +20,10 @@ from livekit.agents import (
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+try:
+    from src.crop_specialist import CropSpecialist
+except ModuleNotFoundError:
+    from crop_specialist import CropSpecialist
 
 import sys
 from pathlib import Path
@@ -32,15 +36,38 @@ for p in (str(src_dir), str(backend_dir)):
         sys.path.insert(0, p)
 
 try:
-    from src.db import get_caller_info, save_caller_info, init_db, create_escalation_record
+    from src.db import get_caller_info, save_caller_info, init_db, create_escalation_record, create_call_record, update_call_outcome
     from src.tools import fetch_mandi_prices, fetch_district_weather
 except ModuleNotFoundError:
-    from db import get_caller_info, save_caller_info, init_db, create_escalation_record
+    from db import get_caller_info, save_caller_info, init_db, create_escalation_record, create_call_record, update_call_outcome
     from tools import fetch_mandi_prices, fetch_district_weather
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+
+# We will use this class-level tracker or context to mark when a call meets the success criteria.
+class CallContext:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.caller_name = "Unknown Farmer"
+        self.has_mandi = False
+        self.has_weather = False
+        self.has_escalation = False
+
+    def is_successful(self) -> bool:
+        return self.has_mandi or self.has_weather or self.has_escalation
+
+    def get_success_reason(self) -> str:
+        reasons = []
+        if self.has_mandi:
+            reasons.append("Retrieved Mandi Prices")
+        if self.has_weather:
+            reasons.append("Retrieved Weather Forecast")
+        if self.has_escalation:
+            reasons.append("Created Escalation Ticket")
+        return ", ".join(reasons) if reasons else "No success criteria met"
+
 
 SYSTEM_PROMPT = """You are Kisan Mitra, a warm, polite, and helpful voice AI assistant for farmers (Farm & Field track).
 Your goal is to assist farmers with crop advice, farming techniques, market mandi prices, weather updates, and knowing when to escalate to human experts.
@@ -93,7 +120,13 @@ class Assistant(Agent):
             district: District or market location (e.g., 'Yavatmal', 'Ludhiana', 'Nashik', 'Nagpur', 'Pune').
         """
         logger.info(f"Tool lookup_mandi_prices invoked for crop='{crop}', district='{district}'")
-        return fetch_mandi_prices(crop=crop, district=district)
+        res = fetch_mandi_prices(crop=crop, district=district)
+        if not res.startswith("FAILURE"):
+            # If the tool successfully ran (i.e. not simulated failure)
+            room_name = context.room.name
+            if hasattr(context.room, "_call_ctx"):
+                context.room._call_ctx.has_mandi = True
+        return res
 
     @function_tool
     async def get_district_weather(self, context: RunContext, district: str) -> str:
@@ -103,7 +136,12 @@ class Assistant(Agent):
             district: Name of the district or city (e.g., 'Yavatmal', 'Ludhiana', 'Pune', 'Nashik').
         """
         logger.info(f"Tool get_district_weather invoked for district='{district}'")
-        return fetch_district_weather(district=district)
+        res = fetch_district_weather(district=district)
+        if not res.startswith("FAILURE"):
+            room_name = context.room.name
+            if hasattr(context.room, "_call_ctx"):
+                context.room._call_ctx.has_weather = True
+        return res
 
     @function_tool
     async def lookup_caller(self, context: RunContext, identifier: str) -> str:
@@ -116,6 +154,10 @@ class Assistant(Agent):
         record = get_caller_info(identifier)
         if not record:
             return f"No prior record found for caller '{identifier}'. This is a new caller."
+
+        # Track caller name if found
+        if hasattr(context.room, "_call_ctx") and record.get("name"):
+            context.room._call_ctx.caller_name = record["name"]
 
         return f"Caller record found: {json.dumps(record)}"
 
@@ -162,6 +204,10 @@ class Assistant(Agent):
             language_preference=language_preference,
             facts=facts,
         )
+
+        if hasattr(context.room, "_call_ctx"):
+            context.room._call_ctx.caller_name = name
+
         return f"Successfully saved details for {name}: {json.dumps(saved_record)}"
 
     @function_tool
@@ -202,6 +248,10 @@ class Assistant(Agent):
             location=location,
         )
 
+        if hasattr(context.room, "_call_ctx"):
+            context.room._call_ctx.has_escalation = True
+            context.room._call_ctx.caller_name = caller_name
+
         ref_id = record["reference_id"]
         status = record["status"]
         is_update = record.get("is_duplicate_updated", False)
@@ -216,6 +266,19 @@ class Assistant(Agent):
             f"INSTRUCTIONS FOR AGENT: Inform the caller out loud that their request has been logged under Reference ID '{ref_id}'. "
             f"Tell them clearly that an agricultural officer from Krishi Vigyan Kendra will call them back via {record['contact_method']} within 24 hours."
         )
+
+    @function_tool
+    async def handoff_to_crop_specialist(self, context: RunContext, user_query: str) -> str:
+        """Hand off the conversation to the Crop Problem Specialist.
+        The main agent announces the handoff and then delegates control.
+        """
+        logger.info("Handoff to CropSpecialist requested: %s", user_query)
+        # Announce the handoff to the caller
+        handoff_msg = "I will connect you to our crop problem specialist."
+        # Instantiate the specialist and invoke a dummy tool as proof of handoff
+        specialist = CropSpecialist()
+        await specialist.dummy_tool(context)
+        return handoff_msg
 
 
 
@@ -234,65 +297,57 @@ server.setup_fnc = prewarm
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
     # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
+    # Initialize CallContext on the room object
+    call_ctx = CallContext(session_id=ctx.room.name)
+    ctx.room._call_ctx = call_ctx
+
+    # Save initial Call Record to DB
+    create_call_record(session_id=ctx.room.name, caller_name="Unknown Farmer")
+
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
-                model="gemini-3.5-flash-lite",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+            model="gemini-3.5-flash-lite",
+        ),
         tts=murf.TTS(
-                voice="Anisha", 
-                locale="hi-IN",
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
+            voice="Anisha", 
+            locale="hi-IN",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
     # Join the room and connect to the user first
     await ctx.connect()
+
+    # Hook into connection closed / ended event to save outcome
+    @ctx.room.on("disconnected")
+    def on_disconnected(reason):
+        logger.info(f"Room disconnected: {reason}")
+        outcome = "success" if call_ctx.is_successful() else "failed"
+        outcome_reason = call_ctx.get_success_reason() if call_ctx.is_successful() else "Caller disconnected without completing objectives"
+        update_call_outcome(
+            session_id=ctx.room.name,
+            outcome=outcome,
+            reason=outcome_reason,
+            caller_name=call_ctx.caller_name
+        )
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
         room=ctx.room,
     )
+
 
 
 if __name__ == "__main__":
